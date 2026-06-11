@@ -64,6 +64,24 @@ fn bench_distance_l2(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_distance_cosine(c: &mut Criterion) {
+    init_vec();
+    let db = Connection::open_in_memory().unwrap();
+    let a = random_vector(1536);
+    let b = random_vector(1536);
+    let mut stmt = db.prepare("select vec_distance_cosine(?, ?)").unwrap();
+
+    let mut group = c.benchmark_group("distance");
+    group.bench_function("cosine_float_d1536", |bench| {
+        bench.iter(|| {
+            let _: f64 = stmt
+                .query_row(rusqlite::params![a.as_bytes(), b.as_bytes()], |r| r.get(0))
+                .unwrap();
+        });
+    });
+    group.finish();
+}
+
 fn bench_knn(c: &mut Criterion) {
     init_vec();
     let d = 1536;
@@ -98,5 +116,5 @@ fn bench_knn(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_distance_l2, bench_knn);
+criterion_group!(benches, bench_distance_l2, bench_distance_cosine, bench_knn);
 criterion_main!(benches);

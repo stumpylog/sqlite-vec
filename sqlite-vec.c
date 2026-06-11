@@ -157,6 +157,54 @@ static f32 l2_sqr_float_fma(const void *pVect1v, const void *pVect2v,
   return sqrt(TmpRes[0] + TmpRes[1] + TmpRes[2] + TmpRes[3] + TmpRes[4] +
               TmpRes[5] + TmpRes[6] + TmpRes[7]);
 }
+
+// Horizontal sum of an __m256 register: add the 8 lanes together.
+// Requires SSE3 (implied by AVX).
+__attribute__((target("avx,fma")))
+static inline f32 hsum_ps256(__m256 v) {
+  __m128 lo = _mm256_castps256_ps128(v);
+  __m128 hi = _mm256_extractf128_ps(v, 1);
+  lo = _mm_add_ps(lo, hi);
+  lo = _mm_hadd_ps(lo, lo);
+  lo = _mm_hadd_ps(lo, lo);
+  return _mm_cvtss_f32(lo);
+}
+
+// AVX+FMA cosine distance for f32 vectors.
+// Three accumulators (dot, aMag, bMag) computed in parallel with fmadd.
+// Handles any dimension via a scalar tail for the remainder < 8 lanes.
+__attribute__((target("avx,fma")))
+static f32 cosine_float_avx2(const void *pVect1v, const void *pVect2v,
+                              const void *qty_ptr) {
+  const f32 *a = (const f32 *)pVect1v;
+  const f32 *b = (const f32 *)pVect2v;
+  size_t qty = *((const size_t *)qty_ptr);
+
+  __m256 dot_acc  = _mm256_setzero_ps();
+  __m256 aMag_acc = _mm256_setzero_ps();
+  __m256 bMag_acc = _mm256_setzero_ps();
+
+  size_t i = 0;
+  for (; i + 8 <= qty; i += 8) {
+    __m256 v1 = _mm256_loadu_ps(a + i);
+    __m256 v2 = _mm256_loadu_ps(b + i);
+    dot_acc  = _mm256_fmadd_ps(v1, v2, dot_acc);
+    aMag_acc = _mm256_fmadd_ps(v1, v1, aMag_acc);
+    bMag_acc = _mm256_fmadd_ps(v2, v2, bMag_acc);
+  }
+
+  f32 dot  = hsum_ps256(dot_acc);
+  f32 aMag = hsum_ps256(aMag_acc);
+  f32 bMag = hsum_ps256(bMag_acc);
+
+  for (; i < qty; i++) {
+    dot  += a[i] * b[i];
+    aMag += a[i] * a[i];
+    bMag += b[i] * b[i];
+  }
+
+  return 1.0f - (dot / (sqrt(aMag) * sqrt(bMag)));
+}
 #endif
 
 #ifdef SQLITE_VEC_ENABLE_NEON
@@ -526,6 +574,20 @@ static double distance_l1_f32(const void *a, const void *b, const void *d) {
   return l1_f32(a, b, d);
 }
 
+static f32 cosine_float_scalar(const void *pVect1v, const void *pVect2v,
+                               const void *qty_ptr) {
+  const f32 *pVect1 = (const f32 *)pVect1v;
+  const f32 *pVect2 = (const f32 *)pVect2v;
+  size_t qty = *((const size_t *)qty_ptr);
+  f32 dot = 0, aMag = 0, bMag = 0;
+  for (size_t i = 0; i < qty; i++) {
+    dot  += pVect1[i] * pVect2[i];
+    aMag += pVect1[i] * pVect1[i];
+    bMag += pVect2[i] * pVect2[i];
+  }
+  return 1.0f - (dot / (sqrt(aMag) * sqrt(bMag)));
+}
+
 static f32 distance_cosine_float(const void *pVect1v, const void *pVect2v,
                                  const void *qty_ptr) {
 #ifdef SQLITE_VEC_ENABLE_NEON
@@ -533,21 +595,12 @@ static f32 distance_cosine_float(const void *pVect1v, const void *pVect2v,
     return cosine_float_neon(pVect1v, pVect2v, qty_ptr);
   }
 #endif
-  f32 *pVect1 = (f32 *)pVect1v;
-  f32 *pVect2 = (f32 *)pVect2v;
-  size_t qty = *((size_t *)qty_ptr);
-
-  f32 dot = 0;
-  f32 aMag = 0;
-  f32 bMag = 0;
-  for (size_t i = 0; i < qty; i++) {
-    dot += *pVect1 * *pVect2;
-    aMag += *pVect1 * *pVect1;
-    bMag += *pVect2 * *pVect2;
-    pVect1++;
-    pVect2++;
-  }
-  return 1 - (dot / (sqrt(aMag) * sqrt(bMag)));
+#ifdef SQLITE_VEC_ENABLE_AVX
+  static int has_fma = -1;
+  if (has_fma < 0) has_fma = __builtin_cpu_supports("fma");
+  if (has_fma) return cosine_float_avx2(pVect1v, pVect2v, qty_ptr);
+#endif
+  return cosine_float_scalar(pVect1v, pVect2v, qty_ptr);
 }
 static f32 cosine_int8(const void *pA, const void *pB, const void *pD) {
   i8 *a = (i8 *)pA;
