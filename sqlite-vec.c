@@ -383,6 +383,62 @@ static f32 cosine_int8_avx2(const void *pA, const void *pB, const void *pD) {
   return 1.0f - ((f32)dot / (sqrtf((f32)aMag) * sqrtf((f32)bMag)));
 }
 
+/**
+ * AVX+FMA vector normalization.
+ * Pass 1: accumulate squared norm with FMA. Pass 2: multiply by reciprocal.
+ * Reciprocal avoids per-element division in the second pass.
+ */
+__attribute__((target("avx,fma")))
+static void vec_normalize_avx(f32 *out, const f32 *v, size_t d) {
+  __m256 acc = _mm256_setzero_ps();
+  size_t i = 0;
+  for (; i + 8 <= d; i += 8) {
+    __m256 x = _mm256_loadu_ps(v + i);
+    acc = _mm256_fmadd_ps(x, x, acc);
+  }
+  f32 sum = hsum_ps256(acc);
+  for (; i < d; i++) sum += v[i] * v[i];
+
+  f32 inv = 1.0f / sqrtf(sum);
+  __m256 vinv = _mm256_set1_ps(inv);
+  i = 0;
+  for (; i + 8 <= d; i += 8) {
+    _mm256_storeu_ps(out + i, _mm256_mul_ps(_mm256_loadu_ps(v + i), vinv));
+  }
+  for (; i < d; i++) out[i] = v[i] * inv;
+}
+
+/*
+ * Quantize a float32 array to int8 using the formula:
+ *   out[i] = clamp((src[i] + 1.0) * 127.5 - 128, -128, 127)
+ * Maps [-1,1] -> [-128,127]. Used by both rescore and diskann insert paths.
+ */
+__attribute__((target("avx")))
+static void quantize_float_to_int8_avx(const float *src, i8 *dst, size_t d) {
+  const __m256 scale  = _mm256_set1_ps(255.0f / 2.0f);
+  const __m256 offset = _mm256_set1_ps(1.0f);
+  const __m256 bias   = _mm256_set1_ps(-128.0f);
+  size_t i = 0;
+  for (; i + 8 <= d; i += 8) {
+    __m256 v = _mm256_loadu_ps(src + i);
+    v = _mm256_add_ps(_mm256_mul_ps(_mm256_add_ps(v, offset), scale), bias);
+    /* Split into two __m128 halves (pure AVX, no AVX2 integer ops needed) */
+    __m128 vlo = _mm256_castps256_ps128(v);
+    __m128 vhi = _mm256_extractf128_ps(v, 1);
+    __m128i ilo  = _mm_cvtps_epi32(vlo);
+    __m128i ihi  = _mm_cvtps_epi32(vhi);
+    __m128i i16  = _mm_packs_epi32(ilo, ihi);
+    __m128i i8   = _mm_packs_epi16(i16, i16);
+    _mm_storel_epi64((__m128i *)(dst + i), i8);
+  }
+  for (; i < d; i++) {
+    float fv = (src[i] + 1.0f) * (255.0f / 2.0f) - 128.0f;
+    if (!(fv <= 127.0f)) fv = 127.0f;
+    if (!(fv >= -128.0f)) fv = -128.0f;
+    dst[i] = (i8)fv;
+  }
+}
+
 // Runtime CPU capability flags. Populated in sqlite3_vec_init via CPUID
 // (deterministic, safe to write on every connection open). Dispatch sites
 // read directly with no per-call guard needed.
@@ -2344,13 +2400,20 @@ static void vec_normalize(sqlite3_context *context, int argc,
 
   f32 *v = (f32 *)vector;
 
-  f32 norm = 0;
-  for (size_t i = 0; i < dimensions; i++) {
-    norm += v[i] * v[i];
-  }
-  norm = sqrt(norm);
-  for (size_t i = 0; i < dimensions; i++) {
-    out[i] = v[i] / norm;
+#ifdef SQLITE_VEC_ENABLE_AVX
+  if (vec_avx_caps.fma && dimensions >= 8) {
+    vec_normalize_avx(out, v, dimensions);
+  } else
+#endif
+  {
+    f32 norm = 0;
+    for (size_t i = 0; i < dimensions; i++) {
+      norm += v[i] * v[i];
+    }
+    norm = sqrt(norm);
+    for (size_t i = 0; i < dimensions; i++) {
+      out[i] = v[i] / norm;
+    }
   }
 
   sqlite3_result_blob(context, out, dimensions * sizeof(f32), sqlite3_free);
@@ -6251,7 +6314,7 @@ typedef enum  {
   VEC0_IDXSTR_KIND_KNN_K = '}',
   VEC0_IDXSTR_KIND_KNN_ROWID_IN = '[',
   // argv[i] is a constraint on a PARTITON KEY column in a KNN query
-  // 
+  //
   VEC0_IDXSTR_KIND_KNN_PARTITON_CONSTRAINT = ']',
 
   // argv[i] is a constraint on the distance column in a KNN query
@@ -6271,19 +6334,19 @@ typedef enum  {
 
   // Equality constraint on a PARTITON KEY column, ex `user_id = 123`
   VEC0_PARTITION_OPERATOR_EQ = 'a',
-  
+
   // "Greater than" constraint on a PARTITON KEY column, ex `year > 2024`
   VEC0_PARTITION_OPERATOR_GT = 'b',
-  
+
   // "Less than or equal to" constraint on a PARTITON KEY column, ex `year <= 2024`
   VEC0_PARTITION_OPERATOR_LE = 'c',
 
   // "Less than" constraint on a PARTITON KEY column, ex `year < 2024`
   VEC0_PARTITION_OPERATOR_LT = 'd',
-  
+
   // "Greater than or equal to" constraint on a PARTITON KEY column, ex `year >= 2024`
   VEC0_PARTITION_OPERATOR_GE = 'e',
-  
+
   // "Not equal to" constraint on a PARTITON KEY column, ex `year != 2024`
   VEC0_PARTITION_OPERATOR_NE = 'f',
 } vec0_partition_operator;
@@ -6653,7 +6716,7 @@ static int vec0BestIndex(sqlite3_vtab *pVTab, sqlite3_index_info *pIdxInfo) {
           // IMP TODO
           rc = SQLITE_ERROR;
           vtab_set_error(
-            pVTab, 
+            pVTab,
             "Illegal WHERE constraint on distance column in a KNN query. "
             "Only one of GT, GE, LT, LE constraints are allowed."
           );

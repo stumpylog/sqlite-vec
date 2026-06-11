@@ -172,6 +172,23 @@ fn bench_distance_l1_int8(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_normalize(c: &mut Criterion) {
+    init_vec();
+    let db = Connection::open_in_memory().unwrap();
+    let a = random_vector(1536);
+    let mut stmt = db.prepare("select vec_normalize(?)").unwrap();
+
+    let mut group = c.benchmark_group("normalize");
+    group.bench_function("float_d1536", |bench| {
+        bench.iter(|| {
+            let _: Vec<u8> = stmt
+                .query_row(rusqlite::params![a.as_bytes()], |r| r.get(0))
+                .unwrap();
+        });
+    });
+    group.finish();
+}
+
 fn bench_knn(c: &mut Criterion) {
     init_vec();
     let d = 1536;
@@ -206,5 +223,15 @@ fn bench_knn(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_distance_l2, bench_distance_cosine, bench_distance_l2_int8, bench_distance_cosine_int8, bench_distance_l1_f32, bench_distance_l1_int8, bench_knn);
+criterion_group!(
+    benches,
+    bench_distance_l2,
+    bench_distance_cosine,
+    bench_distance_l2_int8,
+    bench_distance_cosine_int8,
+    bench_distance_l1_f32,
+    bench_distance_l1_int8,
+    bench_normalize,
+    bench_knn
+);
 criterion_main!(benches);
