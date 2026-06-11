@@ -86,7 +86,8 @@ enum VectorElementType {
 #define PORTABLE_ALIGN32 __attribute__((aligned(32)))
 #define PORTABLE_ALIGN64 __attribute__((aligned(64)))
 
-__attribute__((target("avx,avx2")))
+// AVX-only path: works on Sandy Bridge / Ivy Bridge (AVX, no FMA).
+__attribute__((target("avx")))
 static f32 l2_sqr_float_avx(const void *pVect1v, const void *pVect2v,
                             const void *qty_ptr) {
   f32 *pVect1 = (f32 *)pVect1v;
@@ -114,6 +115,42 @@ static f32 l2_sqr_float_avx(const void *pVect1v, const void *pVect2v,
     pVect2 += 8;
     diff = _mm256_sub_ps(v1, v2);
     sum = _mm256_add_ps(sum, _mm256_mul_ps(diff, diff));
+  }
+
+  _mm256_store_ps(TmpRes, sum);
+  return sqrt(TmpRes[0] + TmpRes[1] + TmpRes[2] + TmpRes[3] + TmpRes[4] +
+              TmpRes[5] + TmpRes[6] + TmpRes[7]);
+}
+
+// FMA path: Haswell+ (AVX2 + FMA). Fuses sub/mul/add into one instruction.
+__attribute__((target("avx,fma")))
+static f32 l2_sqr_float_fma(const void *pVect1v, const void *pVect2v,
+                            const void *qty_ptr) {
+  f32 *pVect1 = (f32 *)pVect1v;
+  f32 *pVect2 = (f32 *)pVect2v;
+  size_t qty = *((size_t *)qty_ptr);
+  f32 PORTABLE_ALIGN32 TmpRes[8];
+  size_t qty16 = qty >> 4;
+
+  const f32 *pEnd1 = pVect1 + (qty16 << 4);
+
+  __m256 diff, v1, v2;
+  __m256 sum = _mm256_set1_ps(0);
+
+  while (pVect1 < pEnd1) {
+    v1 = _mm256_loadu_ps(pVect1);
+    pVect1 += 8;
+    v2 = _mm256_loadu_ps(pVect2);
+    pVect2 += 8;
+    diff = _mm256_sub_ps(v1, v2);
+    sum = _mm256_fmadd_ps(diff, diff, sum);
+
+    v1 = _mm256_loadu_ps(pVect1);
+    pVect1 += 8;
+    v2 = _mm256_loadu_ps(pVect2);
+    pVect2 += 8;
+    diff = _mm256_sub_ps(v1, v2);
+    sum = _mm256_fmadd_ps(diff, diff, sum);
   }
 
   _mm256_store_ps(TmpRes, sum);
@@ -418,10 +455,15 @@ static f32 distance_l2_sqr_float(const void *a, const void *b, const void *d) {
   }
 #endif
 #ifdef SQLITE_VEC_ENABLE_AVX
-  static int has_avx2 = -1;
-  if (has_avx2 < 0) has_avx2 = __builtin_cpu_supports("avx2");
-  if (has_avx2 && ((*(const size_t *)d) % 16 == 0)) {
-    return l2_sqr_float_avx(a, b, d);
+  static int simd_level = -1;
+  if (simd_level < 0) {
+    if (__builtin_cpu_supports("fma")) simd_level = 2;
+    else if (__builtin_cpu_supports("avx")) simd_level = 1;
+    else simd_level = 0;
+  }
+  if ((*(const size_t *)d) % 16 == 0) {
+    if (simd_level >= 2) return l2_sqr_float_fma(a, b, d);
+    if (simd_level >= 1) return l2_sqr_float_avx(a, b, d);
   }
 #endif
   return l2_sqr_float(a, b, d);
