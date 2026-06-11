@@ -330,6 +330,58 @@ static i32 l1_int8_avx2(const void *pVect1v, const void *pVect2v,
 
   return sum;
 }
+
+/**
+ * AVX2 cosine distance for int8 vectors.
+ * Computes dot product, aMag, and bMag in a single pass: widen 16 i8 elements
+ * to i16, then _mm256_madd_epi16 accumulates each pair into i32 accumulators.
+ * No overflow: max 1536 elements, each product <= 128*128=16384, total << INT32_MAX.
+ */
+__attribute__((target("avx2")))
+static f32 cosine_int8_avx2(const void *pA, const void *pB, const void *pD) {
+  const i8 *a = (const i8 *)pA;
+  const i8 *b = (const i8 *)pB;
+  size_t qty = *((const size_t *)pD);
+
+  __m256i dot_acc  = _mm256_setzero_si256();
+  __m256i aMag_acc = _mm256_setzero_si256();
+  __m256i bMag_acc = _mm256_setzero_si256();
+  size_t i = 0;
+
+  for (; i + 16 <= qty; i += 16) {
+    __m128i va8 = _mm_loadu_si128((const __m128i *)(a + i));
+    __m128i vb8 = _mm_loadu_si128((const __m128i *)(b + i));
+    __m256i va16 = _mm256_cvtepi8_epi16(va8);
+    __m256i vb16 = _mm256_cvtepi8_epi16(vb8);
+    dot_acc  = _mm256_add_epi32(dot_acc,  _mm256_madd_epi16(va16, vb16));
+    aMag_acc = _mm256_add_epi32(aMag_acc, _mm256_madd_epi16(va16, va16));
+    bMag_acc = _mm256_add_epi32(bMag_acc, _mm256_madd_epi16(vb16, vb16));
+  }
+
+  // Horizontal sum helper: fold 256-bit i32 -> scalar
+  #define HSUM_EPI32(v) ({                               \
+    __m128i _lo = _mm256_castsi256_si128(v);             \
+    __m128i _hi = _mm256_extracti128_si256((v), 1);      \
+    __m128i _s  = _mm_add_epi32(_lo, _hi);               \
+    _s = _mm_hadd_epi32(_s, _s);                         \
+    _s = _mm_hadd_epi32(_s, _s);                         \
+    _mm_cvtsi128_si32(_s);                               \
+  })
+
+  i32 dot  = HSUM_EPI32(dot_acc);
+  i32 aMag = HSUM_EPI32(aMag_acc);
+  i32 bMag = HSUM_EPI32(bMag_acc);
+  #undef HSUM_EPI32
+
+  // Scalar tail
+  for (; i < qty; i++) {
+    dot  += (i32)a[i] * (i32)b[i];
+    aMag += (i32)a[i] * (i32)a[i];
+    bMag += (i32)b[i] * (i32)b[i];
+  }
+
+  return 1.0f - ((f32)dot / (sqrtf((f32)aMag) * sqrtf((f32)bMag)));
+}
 #endif
 
 #ifdef SQLITE_VEC_ENABLE_NEON
@@ -880,6 +932,13 @@ static f32 distance_cosine_int8(const void *a, const void *b, const void *d) {
 #ifdef SQLITE_VEC_ENABLE_NEON
   if ((*(const size_t *)d) > 15) {
     return cosine_int8_neon(a, b, d);
+  }
+#endif
+#ifdef SQLITE_VEC_ENABLE_AVX
+  static int has_avx2 = -1;
+  if (has_avx2 < 0) has_avx2 = __builtin_cpu_supports("avx2");
+  if (has_avx2 && (*(const size_t *)d) >= 16) {
+    return cosine_int8_avx2(a, b, d);
   }
 #endif
   return cosine_int8(a, b, d);
