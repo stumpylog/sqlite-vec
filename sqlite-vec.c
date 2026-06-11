@@ -247,6 +247,89 @@ static f32 l2_sqr_int8_avx2(const void *pVect1v, const void *pVect2v,
 
   return sqrtf((f32)sum);
 }
+
+/**
+ * AVX2 L1 (Manhattan) distance for f32 vectors.
+ * Computes |a[i]-b[i]| via sign-bit clear on the f32 difference, accumulates
+ * 8 lanes at a time. Returns double to match the scalar/NEON contract.
+ */
+__attribute__((target("avx")))
+static double l1_f32_avx(const void *pVect1v, const void *pVect2v,
+                          const void *qty_ptr) {
+  const f32 *a = (const f32 *)pVect1v;
+  const f32 *b = (const f32 *)pVect2v;
+  size_t qty = *((const size_t *)qty_ptr);
+
+  // Clears the sign bit of each f32 lane -> absolute value.
+  const __m256 sign_mask = _mm256_set1_ps(-0.0f);
+
+  __m256 acc = _mm256_setzero_ps();
+  size_t i = 0;
+
+  for (; i + 8 <= qty; i += 8) {
+    __m256 va = _mm256_loadu_ps(a + i);
+    __m256 vb = _mm256_loadu_ps(b + i);
+    __m256 diff = _mm256_sub_ps(va, vb);
+    acc = _mm256_add_ps(acc, _mm256_andnot_ps(sign_mask, diff));
+  }
+
+  // Horizontal sum of 8 f32 lanes
+  __m128 lo = _mm256_castps256_ps128(acc);
+  __m128 hi = _mm256_extractf128_ps(acc, 1);
+  lo = _mm_add_ps(lo, hi);
+  lo = _mm_hadd_ps(lo, lo);
+  lo = _mm_hadd_ps(lo, lo);
+  double sum = (double)_mm_cvtss_f32(lo);
+
+  // Scalar tail
+  for (; i < qty; i++) {
+    sum += fabs((double)a[i] - (double)b[i]);
+  }
+
+  return sum;
+}
+
+/**
+ * AVX2 L1 (Manhattan) distance for int8 vectors.
+ * Widens 16 i8 elements to i16, takes absolute difference, accumulates into
+ * i32 via _mm256_madd_epi16 against a vector of ones.
+ */
+__attribute__((target("avx2")))
+static i32 l1_int8_avx2(const void *pVect1v, const void *pVect2v,
+                         const void *qty_ptr) {
+  const i8 *a = (const i8 *)pVect1v;
+  const i8 *b = (const i8 *)pVect2v;
+  size_t qty = *((const size_t *)qty_ptr);
+
+  const __m256i ones = _mm256_set1_epi16(1);
+  __m256i acc = _mm256_setzero_si256();
+  size_t i = 0;
+
+  for (; i + 16 <= qty; i += 16) {
+    __m128i va8 = _mm_loadu_si128((const __m128i *)(a + i));
+    __m128i vb8 = _mm_loadu_si128((const __m128i *)(b + i));
+    __m256i va16 = _mm256_cvtepi8_epi16(va8);
+    __m256i vb16 = _mm256_cvtepi8_epi16(vb8);
+    __m256i diff = _mm256_sub_epi16(va16, vb16);
+    __m256i abs_diff = _mm256_abs_epi16(diff);
+    acc = _mm256_add_epi32(acc, _mm256_madd_epi16(abs_diff, ones));
+  }
+
+  // Horizontal sum: fold 256-bit -> 128-bit -> scalar
+  __m128i lo = _mm256_castsi256_si128(acc);
+  __m128i hi = _mm256_extracti128_si256(acc, 1);
+  __m128i sum128 = _mm_add_epi32(lo, hi);
+  sum128 = _mm_hadd_epi32(sum128, sum128);
+  sum128 = _mm_hadd_epi32(sum128, sum128);
+  i32 sum = _mm_cvtsi128_si32(sum128);
+
+  // Scalar tail
+  for (; i < qty; i++) {
+    sum += abs((i32)a[i] - (i32)b[i]);
+  }
+
+  return sum;
+}
 #endif
 
 #ifdef SQLITE_VEC_ENABLE_NEON
@@ -596,6 +679,13 @@ static i32 distance_l1_int8(const void *a, const void *b, const void *d) {
     return l1_int8_neon(a, b, d);
   }
 #endif
+#ifdef SQLITE_VEC_ENABLE_AVX
+  static int has_avx2 = -1;
+  if (has_avx2 < 0) has_avx2 = __builtin_cpu_supports("avx2");
+  if (has_avx2 && (*(const size_t *)d) >= 16) {
+    return l1_int8_avx2(a, b, d);
+  }
+#endif
   return l1_int8(a, b, d);
 }
 
@@ -618,6 +708,13 @@ static double distance_l1_f32(const void *a, const void *b, const void *d) {
 #ifdef SQLITE_VEC_ENABLE_NEON
   if ((*(const size_t *)d) > 3) {
     return l1_f32_neon(a, b, d);
+  }
+#endif
+#ifdef SQLITE_VEC_ENABLE_AVX
+  static int has_avx = -1;
+  if (has_avx < 0) has_avx = __builtin_cpu_supports("avx");
+  if (has_avx && (*(const size_t *)d) >= 8) {
+    return l1_f32_avx(a, b, d);
   }
 #endif
   return l1_f32(a, b, d);

@@ -110,6 +110,46 @@ fn bench_distance_l2_int8(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_distance_l1_f32(c: &mut Criterion) {
+    init_vec();
+    let db = Connection::open_in_memory().unwrap();
+    let a = random_vector(1536);
+    let b = random_vector(1536);
+    let mut stmt = db.prepare("select vec_distance_l1(?, ?)").unwrap();
+
+    let mut group = c.benchmark_group("distance");
+    group.bench_function("l1_float_d1536", |bench| {
+        bench.iter(|| {
+            let _: f64 = stmt
+                .query_row(rusqlite::params![a.as_bytes(), b.as_bytes()], |r| r.get(0))
+                .unwrap();
+        });
+    });
+    group.finish();
+}
+
+fn bench_distance_l1_int8(c: &mut Criterion) {
+    init_vec();
+    let db = Connection::open_in_memory().unwrap();
+    let a = random_int8_vector(1536);
+    let b = random_int8_vector(1536);
+    let a_bytes: Vec<u8> = a.iter().map(|&v| v as u8).collect();
+    let b_bytes: Vec<u8> = b.iter().map(|&v| v as u8).collect();
+    let mut stmt = db
+        .prepare("select vec_distance_l1(vec_int8(?), vec_int8(?))")
+        .unwrap();
+
+    let mut group = c.benchmark_group("distance");
+    group.bench_function("l1_int8_d1536", |bench| {
+        bench.iter(|| {
+            let _: f64 = stmt
+                .query_row(rusqlite::params![a_bytes, b_bytes], |r| r.get(0))
+                .unwrap();
+        });
+    });
+    group.finish();
+}
+
 fn bench_knn(c: &mut Criterion) {
     init_vec();
     let d = 1536;
@@ -144,5 +184,5 @@ fn bench_knn(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_distance_l2, bench_distance_cosine, bench_distance_l2_int8, bench_knn);
+criterion_group!(benches, bench_distance_l2, bench_distance_cosine, bench_distance_l2_int8, bench_distance_l1_f32, bench_distance_l1_int8, bench_knn);
 criterion_main!(benches);
