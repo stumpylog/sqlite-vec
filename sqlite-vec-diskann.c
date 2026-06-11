@@ -155,6 +155,12 @@ int diskann_quantize_vector(
       return SQLITE_OK;
     }
     case VEC0_DISKANN_QUANTIZER_INT8: {
+#ifdef SQLITE_VEC_ENABLE_AVX
+      if (vec_avx_caps.avx && dimensions >= 8) {
+        quantize_float_to_int8_avx(src, (i8 *)out, dimensions);
+        return SQLITE_OK;
+      }
+#endif
       f32 step = (1.0f - (-1.0f)) / 255.0f;
       for (size_t i = 0; i < dimensions; i++) {
         ((i8 *)out)[i] = (i8)(((src[i] - (-1.0f)) / step) - 128.0f);

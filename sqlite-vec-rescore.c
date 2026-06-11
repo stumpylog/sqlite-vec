@@ -156,6 +156,12 @@ static void rescore_quantize_float_to_bit(const float *src, uint8_t *dst,
 
 static void rescore_quantize_float_to_int8(const float *src, int8_t *dst,
                                            size_t dimensions) {
+#ifdef SQLITE_VEC_ENABLE_AVX
+  if (vec_avx_caps.avx && dimensions >= 8) {
+    quantize_float_to_int8_avx(src, dst, dimensions);
+    return;
+  }
+#endif
   float step = 2.0f / 255.0f;
   for (size_t i = 0; i < dimensions; i++) {
     float v = (src[i] - (-1.0f)) / step - 128.0f;
