@@ -9,7 +9,9 @@ fn main() {
         .include("../../");
 
     if target_arch == "x86_64" {
-        let omit_simd = std::env::var("OMIT_SIMD_BENCH").map(|v| v == "1").unwrap_or(false);
+        let omit_simd = std::env::var("OMIT_SIMD_BENCH")
+            .map(|v| v == "1")
+            .unwrap_or(false);
         if !omit_simd {
             build.define("SQLITE_VEC_ENABLE_AVX", None);
         }
