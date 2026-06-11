@@ -382,6 +382,15 @@ static f32 cosine_int8_avx2(const void *pA, const void *pB, const void *pD) {
 
   return 1.0f - ((f32)dot / (sqrtf((f32)aMag) * sqrtf((f32)bMag)));
 }
+
+// Runtime CPU capability flags. Populated in sqlite3_vec_init via CPUID
+// (deterministic, safe to write on every connection open). Dispatch sites
+// read directly with no per-call guard needed.
+static struct {
+  int avx;
+  int avx2;
+  int fma;
+} vec_avx_caps = {0, 0, 0};
 #endif
 
 #ifdef SQLITE_VEC_ENABLE_NEON
@@ -680,15 +689,9 @@ static f32 distance_l2_sqr_float(const void *a, const void *b, const void *d) {
   }
 #endif
 #ifdef SQLITE_VEC_ENABLE_AVX
-  static int simd_level = -1;
-  if (simd_level < 0) {
-    if (__builtin_cpu_supports("fma")) simd_level = 2;
-    else if (__builtin_cpu_supports("avx")) simd_level = 1;
-    else simd_level = 0;
-  }
   if ((*(const size_t *)d) % 16 == 0) {
-    if (simd_level >= 2) return l2_sqr_float_fma(a, b, d);
-    if (simd_level >= 1) return l2_sqr_float_avx(a, b, d);
+    if (vec_avx_caps.fma) return l2_sqr_float_fma(a, b, d);
+    if (vec_avx_caps.avx) return l2_sqr_float_avx(a, b, d);
   }
 #endif
   return l2_sqr_float(a, b, d);
@@ -701,9 +704,7 @@ static f32 distance_l2_sqr_int8(const void *a, const void *b, const void *d) {
   }
 #endif
 #ifdef SQLITE_VEC_ENABLE_AVX
-  static int has_avx2 = -1;
-  if (has_avx2 < 0) has_avx2 = __builtin_cpu_supports("avx2");
-  if (has_avx2 && (*(const size_t *)d) >= 16) {
+  if (vec_avx_caps.avx2 && (*(const size_t *)d) >= 16) {
     return l2_sqr_int8_avx2(a, b, d);
   }
 #endif
@@ -732,9 +733,7 @@ static i32 distance_l1_int8(const void *a, const void *b, const void *d) {
   }
 #endif
 #ifdef SQLITE_VEC_ENABLE_AVX
-  static int has_avx2 = -1;
-  if (has_avx2 < 0) has_avx2 = __builtin_cpu_supports("avx2");
-  if (has_avx2 && (*(const size_t *)d) >= 16) {
+  if (vec_avx_caps.avx2 && (*(const size_t *)d) >= 16) {
     return l1_int8_avx2(a, b, d);
   }
 #endif
@@ -763,9 +762,7 @@ static double distance_l1_f32(const void *a, const void *b, const void *d) {
   }
 #endif
 #ifdef SQLITE_VEC_ENABLE_AVX
-  static int has_avx = -1;
-  if (has_avx < 0) has_avx = __builtin_cpu_supports("avx");
-  if (has_avx && (*(const size_t *)d) >= 8) {
+  if (vec_avx_caps.avx && (*(const size_t *)d) >= 8) {
     return l1_f32_avx(a, b, d);
   }
 #endif
@@ -794,9 +791,7 @@ static f32 distance_cosine_float(const void *pVect1v, const void *pVect2v,
   }
 #endif
 #ifdef SQLITE_VEC_ENABLE_AVX
-  static int has_fma = -1;
-  if (has_fma < 0) has_fma = __builtin_cpu_supports("fma");
-  if (has_fma) return cosine_float_avx2(pVect1v, pVect2v, qty_ptr);
+  if (vec_avx_caps.fma) return cosine_float_avx2(pVect1v, pVect2v, qty_ptr);
 #endif
   return cosine_float_scalar(pVect1v, pVect2v, qty_ptr);
 }
@@ -935,9 +930,7 @@ static f32 distance_cosine_int8(const void *a, const void *b, const void *d) {
   }
 #endif
 #ifdef SQLITE_VEC_ENABLE_AVX
-  static int has_avx2 = -1;
-  if (has_avx2 < 0) has_avx2 = __builtin_cpu_supports("avx2");
-  if (has_avx2 && (*(const size_t *)d) >= 16) {
+  if (vec_avx_caps.avx2 && (*(const size_t *)d) >= 16) {
     return cosine_int8_avx2(a, b, d);
   }
 #endif
@@ -1119,9 +1112,7 @@ static f32 distance_hamming(const void *a, const void *b, const void *d) {
   }
 #endif
 #ifdef SQLITE_VEC_ENABLE_AVX
-  static int has_avx2 = -1;
-  if (has_avx2 < 0) has_avx2 = __builtin_cpu_supports("avx2");
-  if (has_avx2 && n_bytes >= 32) {
+  if (vec_avx_caps.avx2 && n_bytes >= 32) {
     return distance_hamming_avx2((const u8 *)a, (const u8 *)b, n_bytes);
   }
 #endif
@@ -10941,6 +10932,13 @@ SQLITE_VEC_API int sqlite3_vec_init(sqlite3 *db, char **pzErrMsg,
   SQLITE_EXTENSION_INIT2(pApi);
 #endif
   int rc = SQLITE_OK;
+
+#ifdef SQLITE_VEC_ENABLE_AVX
+  // CPUID is deterministic; safe to write on every connection open.
+  vec_avx_caps.fma  = __builtin_cpu_supports("fma");
+  vec_avx_caps.avx2 = __builtin_cpu_supports("avx2");
+  vec_avx_caps.avx  = __builtin_cpu_supports("avx");
+#endif
 
 #define DEFAULT_FLAGS (SQLITE_UTF8 | SQLITE_INNOCUOUS | SQLITE_DETERMINISTIC)
 
