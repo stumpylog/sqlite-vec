@@ -205,6 +205,48 @@ static f32 cosine_float_avx2(const void *pVect1v, const void *pVect2v,
 
   return 1.0f - (dot / (sqrt(aMag) * sqrt(bMag)));
 }
+
+/**
+ * AVX2 L2 distance for int8 vectors.
+ * Processes 16 i8 elements per iteration: widens to i16, subtracts, then uses
+ * _mm256_madd_epi16(diff, diff) to accumulate squared differences into i32.
+ * No overflow: max 1536 elements * 65025 max diff^2 << INT32_MAX.
+ */
+__attribute__((target("avx2")))
+static f32 l2_sqr_int8_avx2(const void *pVect1v, const void *pVect2v,
+                              const void *qty_ptr) {
+  const i8 *a = (const i8 *)pVect1v;
+  const i8 *b = (const i8 *)pVect2v;
+  size_t qty = *((const size_t *)qty_ptr);
+
+  __m256i acc = _mm256_setzero_si256();
+  size_t i = 0;
+
+  for (; i + 16 <= qty; i += 16) {
+    __m128i va8 = _mm_loadu_si128((const __m128i *)(a + i));
+    __m128i vb8 = _mm_loadu_si128((const __m128i *)(b + i));
+    __m256i va16 = _mm256_cvtepi8_epi16(va8);
+    __m256i vb16 = _mm256_cvtepi8_epi16(vb8);
+    __m256i diff = _mm256_sub_epi16(va16, vb16);
+    acc = _mm256_add_epi32(acc, _mm256_madd_epi16(diff, diff));
+  }
+
+  // Horizontal sum: fold 256-bit -> 128-bit -> scalar
+  __m128i lo = _mm256_castsi256_si128(acc);
+  __m128i hi = _mm256_extracti128_si256(acc, 1);
+  __m128i sum128 = _mm_add_epi32(lo, hi);
+  sum128 = _mm_hadd_epi32(sum128, sum128);
+  sum128 = _mm_hadd_epi32(sum128, sum128);
+  i32 sum = _mm_cvtsi128_si32(sum128);
+
+  // Scalar tail
+  for (; i < qty; i++) {
+    i32 d = (i32)a[i] - (i32)b[i];
+    sum += d * d;
+  }
+
+  return sqrtf((f32)sum);
+}
 #endif
 
 #ifdef SQLITE_VEC_ENABLE_NEON
@@ -521,6 +563,13 @@ static f32 distance_l2_sqr_int8(const void *a, const void *b, const void *d) {
 #ifdef SQLITE_VEC_ENABLE_NEON
   if ((*(const size_t *)d) > 7) {
     return l2_sqr_int8_neon(a, b, d);
+  }
+#endif
+#ifdef SQLITE_VEC_ENABLE_AVX
+  static int has_avx2 = -1;
+  if (has_avx2 < 0) has_avx2 = __builtin_cpu_supports("avx2");
+  if (has_avx2 && (*(const size_t *)d) >= 16) {
+    return l2_sqr_int8_avx2(a, b, d);
   }
 #endif
   return l2_sqr_int8(a, b, d);
