@@ -14,6 +14,13 @@ ifndef AR
 AR=ar
 endif
 
+# Appended (not overriding) compiler flags, e.g. sanitizers. Lands after the
+# makefile-owned $(CFLAGS) on each recipe so callers can add flags without
+# clobbering the auto-detected SIMD defines (-mavx2 / -mcpu=apple-m1). Use
+# `make <target> EXTRA_CFLAGS="-fsanitize=address,undefined"`; overriding
+# CFLAGS= on the command line would silently drop those base flags.
+EXTRA_CFLAGS ?=
+
 ifeq ($(shell uname -s),Darwin)
 CONFIG_DARWIN=y
 else ifeq ($(OS),Windows_NT)
@@ -109,11 +116,11 @@ $(TARGET_LOADABLE): sqlite-vec.c sqlite-vec.h $(prefix)
 		-Wall -Wextra \
 		-Ivendor/ \
 		-O3 \
-		$(CFLAGS) \
+		$(CFLAGS) $(EXTRA_CFLAGS) \
 		$< $(LOADABLE_LIBS) -o $@
 
 $(TARGET_STATIC): sqlite-vec.c sqlite-vec.h $(prefix) $(OBJS_DIR)
-	$(CC) -Ivendor/ $(CFLAGS) -DSQLITE_CORE -DSQLITE_VEC_STATIC \
+	$(CC) -Ivendor/ $(CFLAGS) $(EXTRA_CFLAGS) -DSQLITE_CORE -DSQLITE_VEC_STATIC \
 	-O3 -c  $< -o $(OBJS_DIR)/vec.o
 	$(AR) rcs $@ $(OBJS_DIR)/vec.o
 
@@ -141,7 +148,7 @@ $(LIBS_DIR)/shell.a: $(OBJS_DIR)/shell.o $(LIBS_DIR)
 	$(AR) rcs $@ $<
 
 $(OBJS_DIR)/sqlite-vec.o: sqlite-vec.c $(OBJS_DIR)
-	$(CC) -c -g3 -Ivendor/ -I./ $(CFLAGS) $< -o $@
+	$(CC) -c -g3 -Ivendor/ -I./ $(CFLAGS) $(EXTRA_CFLAGS) $< -o $@
 
 $(LIBS_DIR)/sqlite-vec.a: $(OBJS_DIR)/sqlite-vec.o $(LIBS_DIR)
 	$(AR) rcs $@ $<
@@ -155,7 +162,7 @@ $(TARGET_CLI): sqlite-vec.h $(LIBS_DIR)/sqlite-vec.a $(LIBS_DIR)/shell.a $(LIBS_
 	-DSQLITE_THREADSAFE=0 -DSQLITE_ENABLE_FTS4 \
 	-DSQLITE_ENABLE_STMT_SCANSTATUS -DSQLITE_ENABLE_BYTECODE_VTAB -DSQLITE_ENABLE_EXPLAIN_COMMENTS \
 	-DSQLITE_EXTRA_INIT=core_init \
-	$(CFLAGS) \
+	$(CFLAGS) $(EXTRA_CFLAGS) \
 	examples/sqlite3-cli/core_init.c $(LIBS_DIR)/shell.a $(LIBS_DIR)/sqlite3.a $(LIBS_DIR)/sqlite-vec.a \
 	$(LINK_LIBS) -o $@
 
@@ -215,7 +222,7 @@ test-loadable-watch:
 	watchexec --exts c,py,Makefile --clear -- make test-loadable
 
 test-unit: sqlite-vec.h $(prefix)
-	$(CC) -DSQLITE_CORE -DSQLITE_VEC_TEST -DSQLITE_VEC_ENABLE_RESCORE -DSQLITE_VEC_ENABLE_DISKANN=1 tests/test-unit.c sqlite-vec.c vendor/sqlite3.c -I./ -Ivendor $(CFLAGS) $(LINK_LIBS) -o $(prefix)/test-unit && $(prefix)/test-unit
+	$(CC) -DSQLITE_CORE -DSQLITE_VEC_TEST -DSQLITE_VEC_ENABLE_RESCORE -DSQLITE_VEC_ENABLE_DISKANN=1 tests/test-unit.c sqlite-vec.c vendor/sqlite3.c -I./ -Ivendor $(CFLAGS) $(EXTRA_CFLAGS) $(LINK_LIBS) -o $(prefix)/test-unit && $(prefix)/test-unit
 
 # Standalone sqlite3 CLI with vec0 compiled in. Useful for benchmarking,
 # profiling (has debug symbols), and scripting without .load_extension.
@@ -228,7 +235,7 @@ cli: sqlite-vec.h $(prefix)
 	-DSQLITE_EXTRA_INIT=core_init \
 	-DSQLITE_THREADSAFE=0 \
 	-Ivendor/ -I./ \
-	$(CFLAGS) \
+	$(CFLAGS) $(EXTRA_CFLAGS) \
 	vendor/sqlite3.c vendor/shell.c sqlite-vec.c examples/sqlite3-cli/core_init.c \
 	$(LINK_LIBS) -o $(prefix)/sqlite3
 
