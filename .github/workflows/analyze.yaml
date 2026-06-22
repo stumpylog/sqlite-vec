@@ -3,6 +3,9 @@ on:
   push:
     branches: [paperless]
   pull_request:
+  schedule:
+    # Nightly at 2:30am UTC for the slower valgrind memcheck.
+    - cron: "30 2 * * *"
 permissions:
   contents: read
 env:
@@ -46,3 +49,21 @@ jobs:
         run: |
           LD_PRELOAD="$(clang-18 -print-file-name=libclang_rt.asan-x86_64.so)" \
             make test-loadable
+
+  # Nightly-only (schedule). Catches uninitialised-read cases ASan misses.
+  # NOTE: currently reports a known, pre-existing batch of uninitialised-read
+  # findings in the vec0 column-definition parser (the `&&` vs `||` token guards)
+  # tracked in docs/superpowers/followups-2026-06-22-deferred-fixes.md. It will
+  # stay red until that fix lands; it does not gate PRs or the tag.
+  valgrind-unit:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y valgrind
+      - run: ./scripts/vendor.sh
+      - run: make test-unit CC=gcc
+      - run: |
+          valgrind --error-exitcode=1 --leak-check=full \
+            --errors-for-leak-kinds=definite \
+            --suppressions=tests/valgrind-sqlite3.supp dist/test-unit

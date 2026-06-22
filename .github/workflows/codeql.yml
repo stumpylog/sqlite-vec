@@ -1,0 +1,19 @@
+name: "CodeQL"
+on:
+  push:
+    branches: [paperless]
+  schedule:
+    - cron: "0 3 * * 1"
+permissions:
+  security-events: write
+  contents: read
+jobs:
+  analyze:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: c-cpp
+      - run: ./scripts/vendor.sh && make loadable
+      - uses: github/codeql-action/analyze@v3

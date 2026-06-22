@@ -1,0 +1,16 @@
+# Valgrind suppressions scoped to the vendored SQLite amalgamation. SQLite is
+# heavily exercised upstream and its memcheck reports here are not our concern;
+# we want memcheck to police sqlite-vec.c. Extend after the first run if
+# additional sqlite3.c-internal stanzas appear.
+{
+   sqlite3-amalgamation-conditional
+   Memcheck:Cond
+   ...
+   obj:*/sqlite3*
+}
+{
+   sqlite3-amalgamation-value8
+   Memcheck:Value8
+   ...
+   obj:*/sqlite3*
+}
