@@ -40,7 +40,31 @@ Do it on a topic branch off the upstream base so it doubles as an
 `asg017/sqlite-vec` PR; then cherry-pick onto `paperless`. Until then the
 nightly valgrind job will report these known findings.
 
-## 2. vlasky `optimize` space-reclaim (#210) — DEFERRED
+## 2. Fuzz harness build is broken (per-PR smoke deferred) — DEFERRED
+
+**What:** `make -C tests/fuzz all` fails before compiling anything:
+`tests/fuzz/Makefile:158: *** missing separator`. The fuzz target list uses
+backslash line-continuations, but the `ivf_*` group line (ending
+`ivf_knn_deep ivf_cell_overflow ivf_rescore`) is missing its trailing `\`, so
+make treats the following `diskann_*` line as a malformed statement. Pre-existing
+upstream (identical to base `04d28bd`); `fuzz-linux` has always been red there,
+and `fuzz-macos`/`fuzz-windows` are already `continue-on-error` best-effort.
+
+**Impact here:** Task 8 originally added a per-PR fuzz smoke (a `pull_request` +
+`push: paperless` trigger on `fuzz.yaml`). Because the harness does not build,
+that made the gate red, so the trigger was reverted — `fuzz.yaml` now matches
+upstream (runs only on push-to-main, which never happens on this fork, plus the
+nightly schedule and manual dispatch). No fuzz coverage gates the integration
+line until the harness is repaired.
+
+**Fix (separate, larger task):** add the missing `\` at the end of the
+`ivf_*` target-list line, then actually validate the harness builds and runs
+against the current base (SQLite 3.53.2, #307 SIMD changes, etc.) — the
+separator is only the first error make reaches. Once green, re-add the per-PR
+fuzz smoke (short `-max_total_time`, the 60s default) and wire it to `paperless`
++ `pull_request`. Upstreamable.
+
+## 3. vlasky `optimize` space-reclaim (#210) — DEFERRED
 
 Skipped for `paperless.1`. vlasky's port predates the v0.1.10 command-column
 mechanism (it reinvents a parallel `TABLE_NAME`/`SpecialInsert` command path)
