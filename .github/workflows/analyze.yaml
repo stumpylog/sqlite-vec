@@ -1,0 +1,48 @@
+name: "Analyze"
+on:
+  push:
+    branches: [paperless]
+  pull_request:
+permissions:
+  contents: read
+env:
+  # Instrument our translation unit only; the vendored SQLite amalgamation is
+  # excluded via the ignorelist (it trips UBSan on intentional patterns).
+  SAN: "-fsanitize=address,undefined -fno-sanitize-recover=all -g"
+jobs:
+  asan-unit:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM 18
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 18
+      - run: ./scripts/vendor.sh
+      - name: Build + run unit tests (ASan/UBSan)
+        run: |
+          make test-unit CC=clang-18 \
+            EXTRA_CFLAGS="$SAN -fsanitize-ignorelist=$PWD/tests/sqlite3-asan-ignorelist.txt"
+  asan-loadable:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+      - name: Install LLVM 18
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 18
+      - run: ./scripts/vendor.sh
+      - name: Build loadable (ASan/UBSan, shared runtime)
+        # -shared-libasan so the dlopened .so resolves the sanitizer runtime we
+        # LD_PRELOAD below (the host python is not itself instrumented).
+        run: |
+          make loadable CC=clang-18 \
+            EXTRA_CFLAGS="$SAN -shared-libasan -fsanitize-ignorelist=$PWD/tests/sqlite3-asan-ignorelist.txt"
+      - run: uv sync --directory tests
+      - name: Run loadable suite under ASan/UBSan
+        env:
+          # The python host leaks; we want OOB/UAF/UB, not python leak noise.
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          LD_PRELOAD="$(clang-18 -print-file-name=libclang_rt.asan-x86_64.so)" \
+            make test-loadable

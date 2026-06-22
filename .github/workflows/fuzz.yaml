@@ -1,7 +1,8 @@
 name: "Fuzz"
 on:
   push:
-    branches: [main]
+    branches: [paperless]
+  pull_request:
   schedule:
     # Nightly at 2am UTC for longer fuzzing sessions
     - cron: "0 2 * * *"

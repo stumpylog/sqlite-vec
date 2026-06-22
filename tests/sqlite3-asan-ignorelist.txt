@@ -1,0 +1,5 @@
+# Exclude the vendored SQLite amalgamation from sanitizer instrumentation; it is
+# battle-tested upstream and trips UBSan on intentional patterns (e.g. unsigned
+# integer overflow). We only want ASan/UBSan to police our own translation unit
+# (sqlite-vec.c). Used via clang's -fsanitize-ignorelist=.
+src:*vendor/sqlite3.c
