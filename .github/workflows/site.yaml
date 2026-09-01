@@ -27,7 +27,7 @@ jobs:
       - run: npm ci
         working-directory: site/
       - run: make site-build
-      - uses: actions/configure-pages@v2
+      - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v4
         with:
           path: site/.vitepress/dist
