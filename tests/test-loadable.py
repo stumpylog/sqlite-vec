@@ -1102,6 +1102,14 @@ def test_vec0_delete_errors():
     ):
         db.execute("delete from t1 where rowid = 1")
     db.rollback()
+    # only the row's own bit counts, not a higher one in the same byte
+    db.execute("begin")
+    db.execute("UPDATE t1_chunks SET validity = x'02'")
+    with _raises(
+        "vec0 deletion error: validity bit is not set for main.t1_chunks.1 at 0"
+    ):
+        db.execute("delete from t1 where rowid = 1")
+    db.rollback()
 
     # EVIDENCE-OF: V21193_05263 vec0 DELETE raises error on validity blob error
     db.commit()
@@ -1311,6 +1319,56 @@ def test_vec0_point():
     ]
 
     assert execute_all(db, "select * from t2 where id = 'xxx'") == []
+
+
+def test_vec0_rowid_constraint_values():
+    # vec0 declares the rowid INTEGER and a text primary key TEXT, so the rowid
+    # lookups it makes itself have to keep the rows SQLite keeps for the same
+    # constraint: the rows of `plain`, declared alike, and the rows of SQLite's
+    # own scan of the vec0 table (`or 0` keeps vec0 from handling it).
+    db = connect(EXT_PATH)
+    db.execute("create virtual table v using vec0(a float[1], chunk_size=8)")
+    db.execute("create table plain(id integer primary key)")
+    for rowid in [0, 1, 5, 6]:
+        db.execute("insert into v(rowid, a) values (?, ?)", [rowid, f"[{rowid}]"])
+        db.execute("insert into plain values (?)", [rowid])
+
+    def rowids(sql, parameters=()):
+        return sorted(row[0] for row in db.execute(sql, parameters))
+
+    mismatches = []
+    for value in [None, 5, 5.0, 5.5, "5", " 5 ", "5e0", "abc", "", b"\x05", 2**63 - 1, 1e19]:
+        want_in = rowids("select id from plain where id in (?, 6)", [value])
+        want_eq = rowids("select id from plain where id = ?", [value])
+        for sql, want in [
+            ("select rowid from v where a match '[0]' and k = 10 and rowid in (?, 6)", want_in),
+            ("select rowid from v where rowid = ?", want_eq),
+            ("select rowid from v where (rowid = ? or 0)", want_eq),
+        ]:
+            if rowids(sql, [value]) != want:
+                mismatches.append((sql, value, rowids(sql, [value]), want))
+
+    db.execute("create virtual table t using vec0(id text primary key, a float[1], chunk_size=8)")
+    db.execute("create table plain_t(id text primary key)")
+    for id in ["a", "A", "b", "5", "c  "]:
+        db.execute("insert into t(id, a) values (?, '[1]')", [id])
+        db.execute("insert into plain_t values (?)", [id])
+    for where in [
+        "id in ('a', 'missing', null)",
+        "id in (5, 'b')",
+        "id collate nocase in ('A', 'missing')",
+        "id collate rtrim in ('c', 'b ')",
+        "id = 'A' collate nocase",
+        "id = 5",
+    ]:
+        want = rowids(f"select id from plain_t where {where}")
+        for sql in [
+            f"select id from t where a match '[0]' and k = 10 and {where}",
+            f"select id from t where {where}",
+        ]:
+            if rowids(sql) != want:
+                mismatches.append((sql, None, rowids(sql), want))
+    assert mismatches == []
 
 
 def test_vec0_text_pk():
@@ -1713,6 +1771,39 @@ def test_vec0_create_errors():
     #    db.execute("insert into t1(a) values (X'AABBCCDD')")
     # db.set_authorizer(None)
     # db.rollback()
+
+
+@pytest.mark.skipif(
+    not SUPPORTS_VTAB_IN, reason="requires vtab `x in (...)` support in SQLite >=3.38"
+)
+def test_vec0_knn_rowid_in_far_apart():
+    # 2**32 + 1 and 1 differ by exactly 2**32, which narrows to 0 as an int,
+    # so a comparator that returns the difference reads them as equal.
+    db = connect(EXT_PATH)
+    db.execute("create virtual table v using vec0(a float[1], chunk_size=8)")
+    db.executemany(
+        "insert into v(rowid, a) values (?, ?)",
+        [(1, "[1]"), (2, "[2]"), (2**32 + 1, "[3]")],
+    )
+    rows = execute_all(
+        db, "select rowid from v where a match '[0]' and k = 10 and rowid in (1, 2)"
+    )
+    assert [row["rowid"] for row in rows] == [1, 2]
+
+    # Differences that overflow an int sort the list out of order, and the
+    # search then misses rowids that are in it.
+    ids = [(-1) ** i * (i + 1) * 3_000_000_000 + i for i in range(5)]
+    db.execute("delete from v")
+    db.executemany(
+        "insert into v(rowid, a) values (?, ?)",
+        [(rowid, f"[{i}]") for i, rowid in enumerate(ids)],
+    )
+    rows = execute_all(
+        db,
+        "select rowid from v where a match '[0]' and k = 10 and rowid in (select value from json_each(?))",
+        [json.dumps(ids)],
+    )
+    assert sorted(row["rowid"] for row in rows) == sorted(ids)
 
 
 def test_vec0_knn():
@@ -2286,6 +2377,56 @@ def test_stress():
     assert len(rows[1]["rowids"]) == 1024 * CHAR_BIT
     assert rows[1]["validity"] == bytes([0b0000_0001]) + bitmap_zerod(1024)[1:]
     assert rowids_value(rows[1]["rowids"])[0] == 1025
+
+
+def test_knn_rowid_in_with_distance_constraint():
+    db = connect(EXT_PATH)
+    db.execute("create virtual table v using vec0(a float[1], chunk_size=8)")
+    for rowid in range(40):
+        db.execute("insert into v(rowid, a) values (?, ?)", [rowid, f"[{rowid}]"])
+
+    rows = db.execute(
+        "select rowid from v where a match '[10]' and k = 40"
+        " and rowid in (2, 9, 11, 30, 31) and distance < 3"
+    ).fetchall()
+    assert sorted(r[0] for r in rows) == [9, 11]
+
+
+def test_knn_filtered_after_delete_and_reinsert():
+    # a chunk's validity bitmap and the chunk-skipping filter must agree after
+    # rows are deleted and their slots reused
+    def build(db):
+        db.execute(
+            "create virtual table v using vec0(doc integer, a float[2], chunk_size=8)"
+        )
+
+    def vec(i):
+        return f"[{i}, {i * 0.37 % 5}]"
+
+    def knn(db):
+        return sorted(tuple(r) for r in db.execute(
+            "select rowid, distance from v where a match '[20, 1]' and k = 50"
+            " and doc in (1, 3)"
+        ).fetchall())
+
+    churned = connect(EXT_PATH)
+    build(churned)
+    for i in range(40):
+        churned.execute("insert into v(rowid, doc, a) values (?, ?, ?)", [i, i % 4, vec(i)])
+    doomed = [i for i in range(40) if i % 4 == 1]
+    for i in doomed:
+        churned.execute("delete from v where rowid = ?", [i])
+    assert {r[0] % 4 for r in knn(churned)} == {3}
+    for i in doomed:
+        churned.execute("insert into v(rowid, doc, a) values (?, 1, ?)", [i, vec(i)])
+
+    fresh = connect(EXT_PATH)
+    build(fresh)
+    for i in range(40):
+        fresh.execute("insert into v(rowid, doc, a) values (?, ?, ?)", [i, i % 4, vec(i)])
+
+    assert knn(churned) == knn(fresh)
+    assert len(knn(fresh)) == 20
 
 
 def test_coverage():
