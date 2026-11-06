@@ -39,7 +39,7 @@ jobs:
           name: sqlite-vec-macos-x86_64-extension
           path: dist/*
   build-macos-aarch64-extension:
-    runs-on: macos-15
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v7
