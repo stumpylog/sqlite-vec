@@ -2379,6 +2379,56 @@ def test_stress():
     assert rowids_value(rows[1]["rowids"])[0] == 1025
 
 
+def test_knn_rowid_in_with_distance_constraint():
+    db = connect(EXT_PATH)
+    db.execute("create virtual table v using vec0(a float[1], chunk_size=8)")
+    for rowid in range(40):
+        db.execute("insert into v(rowid, a) values (?, ?)", [rowid, f"[{rowid}]"])
+
+    rows = db.execute(
+        "select rowid from v where a match '[10]' and k = 40"
+        " and rowid in (2, 9, 11, 30, 31) and distance < 3"
+    ).fetchall()
+    assert sorted(r[0] for r in rows) == [9, 11]
+
+
+def test_knn_filtered_after_delete_and_reinsert():
+    # a chunk's validity bitmap and the chunk-skipping filter must agree after
+    # rows are deleted and their slots reused
+    def build(db):
+        db.execute(
+            "create virtual table v using vec0(doc integer, a float[2], chunk_size=8)"
+        )
+
+    def vec(i):
+        return f"[{i}, {i * 0.37 % 5}]"
+
+    def knn(db):
+        return sorted(tuple(r) for r in db.execute(
+            "select rowid, distance from v where a match '[20, 1]' and k = 50"
+            " and doc in (1, 3)"
+        ).fetchall())
+
+    churned = connect(EXT_PATH)
+    build(churned)
+    for i in range(40):
+        churned.execute("insert into v(rowid, doc, a) values (?, ?, ?)", [i, i % 4, vec(i)])
+    doomed = [i for i in range(40) if i % 4 == 1]
+    for i in doomed:
+        churned.execute("delete from v where rowid = ?", [i])
+    assert {r[0] % 4 for r in knn(churned)} == {3}
+    for i in doomed:
+        churned.execute("insert into v(rowid, doc, a) values (?, 1, ?)", [i, vec(i)])
+
+    fresh = connect(EXT_PATH)
+    build(fresh)
+    for i in range(40):
+        fresh.execute("insert into v(rowid, doc, a) values (?, ?, ?)", [i, i % 4, vec(i)])
+
+    assert knn(churned) == knn(fresh)
+    assert len(knn(fresh)) == 20
+
+
 def test_coverage():
     current_module = inspect.getmodule(inspect.currentframe())
     test_methods = [
