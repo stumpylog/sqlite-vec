@@ -207,6 +207,7 @@ static f32 l2_sqr_float_avx(const void *pVect1v, const void *pVect2v,
 #define VEC_AVX_MULADD(a, b, acc) _mm256_add_ps(_mm256_mul_ps((a), (b)), (acc))
 #endif
 
+__attribute__((target("avx,avx2")))
 static f32 hsum_float_avx(__m256 v) {
   __m128 s = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
   s = _mm_add_ps(s, _mm_movehl_ps(s, s));
@@ -216,6 +217,7 @@ static f32 hsum_float_avx(__m256 v) {
 
 // Cosine distance, 16 floats per step in two independent accumulator sets
 // (dot, |a|^2, |b|^2) so the loop is not bound by FP-add latency.
+__attribute__((target("avx,avx2")))
 static f32 cosine_float_avx(const void *pVect1v, const void *pVect2v,
                             const void *qty_ptr) {
   const f32 *a = (const f32 *)pVect1v;
@@ -621,7 +623,9 @@ static f32 distance_cosine_float(const void *pVect1v, const void *pVect2v,
   }
 #endif
 #ifdef SQLITE_VEC_ENABLE_AVX
-  if ((*(const size_t *)qty_ptr) >= 16) {
+  static int has_avx2 = -1;
+  if (has_avx2 < 0) has_avx2 = __builtin_cpu_supports("avx2");
+  if (has_avx2 && (*(const size_t *)qty_ptr) >= 16) {
     return cosine_float_avx(pVect1v, pVect2v, qty_ptr);
   }
 #endif
