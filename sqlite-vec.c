@@ -5996,6 +5996,7 @@ static int vec0_init(sqlite3 *db, void *pAux, int argc, const char *const *argv,
         goto error;
       }
       rc = sqlite3_prepare_v2(db, zSql, -1, &stmt, NULL);
+      sqlite3_free(zSql);
       if ((rc != SQLITE_OK) || (sqlite3_step(stmt) != SQLITE_DONE)) {
         sqlite3_finalize(stmt);
         *pzErr = sqlite3_mprintf(
@@ -9994,6 +9995,7 @@ int vec0Update_Insert(sqlite3_vtab *pVTab, int argc, sqlite3_value **argv,
       goto cleanup;
     }
     rc = sqlite3_prepare_v2(p->db, zSql, -1, &stmt, NULL);
+    sqlite3_free(zSql);
     if(rc != SQLITE_OK) {
       goto cleanup;
     }
