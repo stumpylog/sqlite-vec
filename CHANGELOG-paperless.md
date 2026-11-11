@@ -4,7 +4,7 @@ Changes carried by the `paperless` branch of `stumpylog/sqlite-vec` beyond upstr
 
 Each upstream PR is carried as one squash commit. Fixes or follow-ups to it are separate commits listed beneath it. Entries read: upstream PR, fork commit, summary.
 
-## v0.1.10-paperless.3 (unreleased)
+## v0.1.10-paperless.3
 
 NEON on Linux arm64, plus memory-safety and leak fixes.
 
