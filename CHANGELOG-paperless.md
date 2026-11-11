@@ -6,6 +6,13 @@ Each upstream PR is carried as one squash commit. Fixes or follow-ups to it are 
 
 ## v0.1.10-paperless.3 (unreleased)
 
+NEON on Linux arm64, plus memory-safety and leak fixes.
+
+NEON on Linux arm64, ported from photostructure/sqlite-vec. Not yet built on aarch64: the aarch64 CI job is the first real build.
+
+- [`96b0b59`](https://github.com/stumpylog/sqlite-vec/commit/96b0b59) Make `l1_int8_neon` compile with GCC, which rejects the signed/unsigned vector conversions Clang accepts. The release build on Linux arm64 uses GCC. From the GCC part of [`a5aec74`](https://github.com/photostructure/sqlite-vec/commit/a5aec74).
+- [`556abed`](https://github.com/stumpylog/sqlite-vec/commit/556abed) Enable NEON on Linux arm64. The Makefile enabled it only on Darwin arm64, so Linux aarch64 builds ran the scalar loop for every distance, including the cosine float kernel paperless-ngx uses. The target comes from `$(CC) -dumpmachine`, not `uname`, so 32-bit Raspberry Pi OS is not mistaken for aarch64. Float32 distances can differ from the scalar results in the last digits. From [`5fb0b3d`](https://github.com/photostructure/sqlite-vec/commit/5fb0b3d) and [`350c67a`](https://github.com/photostructure/sqlite-vec/commit/350c67a).
+
 Memory-safety and leak fixes. Most are ported from [photostructure/sqlite-vec](https://github.com/photostructure/sqlite-vec); they have no upstream PR, so each of those entries names the PhotoStructure commit it came from. They are hand-adapted to this tree and credit their author in the commit message. Three more leaks were found by the ASan/LeakSanitizer scenarios added here.
 
 Ported from photostructure/sqlite-vec:
