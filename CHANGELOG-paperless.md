@@ -4,6 +4,29 @@ Changes carried by the `paperless` branch of `stumpylog/sqlite-vec` beyond upstr
 
 Each upstream PR is carried as one squash commit. Fixes or follow-ups to it are separate commits listed beneath it. Entries read: upstream PR, fork commit, summary.
 
+## v0.1.10-paperless.3 (unreleased)
+
+Memory-safety and leak fixes. Most are ported from [photostructure/sqlite-vec](https://github.com/photostructure/sqlite-vec); they have no upstream PR, so each of those entries names the PhotoStructure commit it came from. They are hand-adapted to this tree and credit their author in the commit message. Three more leaks were found by the ASan/LeakSanitizer scenarios added here.
+
+Ported from photostructure/sqlite-vec:
+
+- [`6fb75ab`](https://github.com/stumpylog/sqlite-vec/commit/6fb75ab) Keep a vec0 table whose `DROP TABLE` fails. `vec0Destroy` freed the table even when SQLite kept it, so the next query, `DROP` or close used freed memory. From [`9a01d16`](https://github.com/photostructure/sqlite-vec/commit/9a01d16).
+- [`0279e28`](https://github.com/stumpylog/sqlite-vec/commit/0279e28) Don't crash when vec0 cannot prepare its chunk lookup: `sqlite3_clear_bindings()` was called on a NULL statement. From [`fdc3282`](https://github.com/photostructure/sqlite-vec/commit/fdc3282).
+- From [`7c03b26`](https://github.com/photostructure/sqlite-vec/commit/7c03b26), in three commits:
+  - [`5a7c1c5`](https://github.com/stumpylog/sqlite-vec/commit/5a7c1c5) Free the SQL string of every auxiliary column `UPDATE`.
+  - [`454cc85`](https://github.com/stumpylog/sqlite-vec/commit/454cc85) Close the blob handle when a long-text metadata write fails, which made `sqlite3_close()` return `SQLITE_BUSY`. Also frees the long-text statements' SQL strings and keeps the write error of the integer, float and boolean kinds.
+  - [`7cb658f`](https://github.com/stumpylog/sqlite-vec/commit/7cb658f) Free the rowids buffer leaked when a metadata text filter's blob read fails. The rest of `7c03b26` (`vec0_init` counters, top-k ownership) does not apply to this tree.
+
+Fork-only, found with the ASan harness:
+
+- [`48766d2`](https://github.com/stumpylog/sqlite-vec/commit/48766d2) Free the `_metadatachunksNN` shadow table names when a vec0 table is freed. Only `xRename` freed them, so every table with a metadata column leaked one string per column each time it was freed.
+- [`7845862`](https://github.com/stumpylog/sqlite-vec/commit/7845862) Free the SQL strings of the auxiliary column `CREATE TABLE` (once per create or connect) and `INSERT` (once per insert).
+
+Tests:
+
+- [`4757c5a`](https://github.com/stumpylog/sqlite-vec/commit/4757c5a) Regression tests for the `DROP TABLE` and chunk-lookup crashes, from the same PhotoStructure commits. Both crashed before.
+- [`64057ce`](https://github.com/stumpylog/sqlite-vec/commit/64057ce) `tests/test-leaks.c` and `make test-leaks`: leak and use-after-free scenarios, run by the `asan-unit` job. Not covered: the failed blob write behind `454cc85` and the failed blob read behind `7cb658f`, which I found no way to trigger.
+
 ## v0.1.10-paperless.2
 
 Performance for filtered KNN (one-document chat queries no longer read the whole index), plus delete and scan improvements.
