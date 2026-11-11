@@ -25,6 +25,10 @@ jobs:
         run: |
           make test-unit CC=clang-18 \
             EXTRA_CFLAGS="$SAN -fsanitize-ignorelist=$PWD/tests/sqlite3-asan-ignorelist.txt"
+      - name: Leak and use-after-free scenarios (ASan/LSan)
+        run: |
+          make test-leaks CC=clang-18 \
+            EXTRA_CFLAGS="$SAN -fsanitize-ignorelist=$PWD/tests/sqlite3-asan-ignorelist.txt"
   asan-loadable:
     runs-on: ubuntu-22.04
     steps:

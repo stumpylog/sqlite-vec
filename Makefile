@@ -224,6 +224,11 @@ test-loadable-watch:
 test-unit: sqlite-vec.h $(prefix)
 	$(CC) -DSQLITE_CORE -DSQLITE_VEC_TEST -DSQLITE_VEC_ENABLE_RESCORE -DSQLITE_VEC_ENABLE_DISKANN=1 tests/test-unit.c sqlite-vec.c vendor/sqlite3.c -I./ -Ivendor $(CFLAGS) $(EXTRA_CFLAGS) $(LINK_LIBS) -o $(prefix)/test-unit && $(prefix)/test-unit
 
+# Leak and use-after-free scenarios; meaningful when built with
+# EXTRA_CFLAGS=-fsanitize=address (see .github/workflows/analyze.yaml).
+test-leaks: sqlite-vec.h $(prefix)
+	$(CC) -DSQLITE_CORE -DSQLITE_VEC_STATIC tests/test-leaks.c sqlite-vec.c vendor/sqlite3.c -I./ -Ivendor $(CFLAGS) $(EXTRA_CFLAGS) $(LINK_LIBS) -o $(prefix)/test-leaks && $(prefix)/test-leaks
+
 # Standalone sqlite3 CLI with vec0 compiled in. Useful for benchmarking,
 # profiling (has debug symbols), and scripting without .load_extension.
 #   make cli
