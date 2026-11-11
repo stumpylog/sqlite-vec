@@ -9592,6 +9592,7 @@ cleanup:
 
 int vec0_write_metadata_value(vec0_vtab *p, int metadata_column_idx, i64 rowid, i64 chunk_id, i64 chunk_offset, sqlite3_value * v, int isupdate) {
   int rc;
+  sqlite3_blob * blobValue = NULL;
   struct Vec0MetadataColumnDefinition * metadata_column = &p->metadata_columns[metadata_column_idx];
   vec0_metadata_column_kind kind = metadata_column->kind;
 
@@ -9631,7 +9632,6 @@ int vec0_write_metadata_value(vec0_vtab *p, int metadata_column_idx, i64 rowid, 
     }
   }
 
-  sqlite3_blob * blobValue = NULL;
   rc = sqlite3_blob_open(p->db, p->schemaName, p->shadowMetadataChunksNames[metadata_column_idx], "data", chunk_id, 1, &blobValue);
   if(rc != SQLITE_OK) {
     goto done;
@@ -9680,6 +9680,9 @@ int vec0_write_metadata_value(vec0_vtab *p, int metadata_column_idx, i64 rowid, 
       memcpy(view+4, s, min(n, VEC0_METADATA_TEXT_VIEW_BUFFER_LENGTH-4));
 
       rc = sqlite3_blob_write(blobValue, &view, VEC0_METADATA_TEXT_VIEW_BUFFER_LENGTH, chunk_offset * VEC0_METADATA_TEXT_VIEW_BUFFER_LENGTH);
+      if(rc != SQLITE_OK) {
+        goto done;
+      }
       if(n > VEC0_METADATA_TEXT_VIEW_DATA_LENGTH) {
         const char * zSql;
 
@@ -9694,6 +9697,7 @@ int vec0_write_metadata_value(vec0_vtab *p, int metadata_column_idx, i64 rowid, 
         }
         sqlite3_stmt * stmt;
         rc = sqlite3_prepare_v2(p->db, zSql, -1, &stmt, NULL);
+        sqlite3_free((void *)zSql);
         if(rc != SQLITE_OK) {
           goto done;
         }
@@ -9706,6 +9710,7 @@ int vec0_write_metadata_value(vec0_vtab *p, int metadata_column_idx, i64 rowid, 
           rc = SQLITE_ERROR;
           goto done;
         }
+        rc = SQLITE_OK;
       }
       else if(prev_n > VEC0_METADATA_TEXT_VIEW_DATA_LENGTH) {
         const char * zSql = sqlite3_mprintf("DELETE FROM " VEC0_SHADOW_METADATA_TEXT_DATA_NAME " WHERE rowid = ?", p->schemaName, p->tableName, metadata_column_idx);
@@ -9715,6 +9720,7 @@ int vec0_write_metadata_value(vec0_vtab *p, int metadata_column_idx, i64 rowid, 
         }
         sqlite3_stmt * stmt;
         rc = sqlite3_prepare_v2(p->db, zSql, -1, &stmt, NULL);
+        sqlite3_free((void *)zSql);
         if(rc != SQLITE_OK) {
           goto done;
         }
@@ -9726,20 +9732,19 @@ int vec0_write_metadata_value(vec0_vtab *p, int metadata_column_idx, i64 rowid, 
           rc = SQLITE_ERROR;
           goto done;
         }
+        rc = SQLITE_OK;
       }
       break;
     }
   }
 
-  if(rc != SQLITE_OK) {
-
-  }
-  rc = sqlite3_blob_close(blobValue);
-  if(rc != SQLITE_OK) {
-    goto done;
-  }
-
   done:
+    if(blobValue) {
+      int closeRc = sqlite3_blob_close(blobValue);
+      if(rc == SQLITE_OK) {
+        rc = closeRc;
+      }
+    }
     return rc;
 }
 
