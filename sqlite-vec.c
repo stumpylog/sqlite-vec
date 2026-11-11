@@ -7435,6 +7435,7 @@ int vec0_metadata_filter_text(vec0_vtab * p, sqlite3_value * value, const void *
   rc = sqlite3_blob_read(rowidsBlob, rowids, sqlite3_blob_bytes(rowidsBlob), 0);
   if(rc != SQLITE_OK) {
     sqlite3_blob_close(rowidsBlob);
+    sqlite3_free(rowids);
     return rc;
   }
   sqlite3_blob_close(rowidsBlob);
