@@ -3924,6 +3924,8 @@ void vec0_free(vec0_vtab *p) {
   for (int i = 0; i < p->numMetadataColumns; i++) {
     sqlite3_free(p->metadata_columns[i].name);
     p->metadata_columns[i].name = NULL;
+    sqlite3_free(p->shadowMetadataChunksNames[i]);
+    p->shadowMetadataChunksNames[i] = NULL;
   }
 }
 
