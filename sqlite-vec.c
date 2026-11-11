@@ -10569,6 +10569,7 @@ int vec0Update_UpdateAuxColumn(vec0_vtab *p, int auxiliary_column_idx, sqlite3_v
     return SQLITE_NOMEM;
   }
   rc = sqlite3_prepare_v2(p->db, zSql, -1, &stmt, NULL);
+  sqlite3_free((void *)zSql);
   if(rc != SQLITE_OK) {
     return rc;
   }
