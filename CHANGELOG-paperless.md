@@ -4,6 +4,15 @@ Changes carried by the `paperless` branch of `stumpylog/sqlite-vec` beyond upstr
 
 Each upstream PR is carried as one squash commit. Fixes or follow-ups to it are separate commits listed beneath it. Entries read: upstream PR, fork commit, summary.
 
+## v0.1.10-paperless.4 (unreleased)
+
+Cheaper float32 cosine KNN on x86. Both changes are fork-only: they have no upstream PR.
+
+- [`0a241f9`](https://github.com/stumpylog/sqlite-vec/commit/0a241f9) Centralize AVX CPU capability detection into a `vec_avx_caps` struct (`avx`, `avx2`, `fma`) filled once in `sqlite3_vec_init`. The three AVX dispatch sites (l2, cosine, hamming) read it instead of each caching `__builtin_cpu_supports("avx2")` in a function-local static. The flags are 0 until init has run, which selects the scalar path. The idea and struct are from `feature/simd-additional` (`277aed8`); the rest of that branch is not carried.
+- [`43e3c80`](https://github.com/stumpylog/sqlite-vec/commit/43e3c80) Compute the cosine query norm once per KNN query, not once per row, with an AVX2+FMA kernel that accumulates only dot and |a|^2 (gated on `vec_avx_caps.avx2` and `.fma`), and drop rows that cannot beat the k-th distance before `min_idx()`. On a 768-dimension float vector the kernel takes 59 ns against 87 ns for the #364 kernel with the data in L1, and 68 ns against 108 ns at a 3 MB working set. A full scan of 60k vectors runs 110M instructions instead of 182M. Wall time moves about 0 to 10%, because a full scan is bound by memory and page reads, not by the kernel. Float32 cosine distances can differ from the scalar and #364 results in the last digits. NEON is unchanged.
+
+Considered and not carried: the rest of `feature/simd-additional`. paperless-ngx only uses float32 cosine, and its `cosine_float_avx2` (`2c64ea3`) measured about 14% slower than the #364 kernel with the data in L1.
+
 ## v0.1.10-paperless.3
 
 NEON on Linux arm64, plus memory-safety and leak fixes.
