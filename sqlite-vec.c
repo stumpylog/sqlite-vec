@@ -261,6 +261,34 @@ static f32 cosine_float_avx(const void *pVect1v, const void *pVect2v,
   return 1 - (dot / (sqrt(aMag) * sqrt(bMag)));
 }
 #undef VEC_AVX_MULADD
+
+// Cosine distance with the query's squared magnitude (bMag) computed once by
+// the caller, and fused multiply-add. Only dot and |a|^2 are accumulated, which
+// is two thirds of the loads and arithmetic of cosine_float_avx. Callers must
+// check vec_avx_caps.avx2 and vec_avx_caps.fma first.
+__attribute__((target("avx,avx2,fma")))
+static f32 cosine_float_avx_fma_qn(const f32 *a, const f32 *b, size_t qty,
+                                   f32 bMag) {
+  const f32 *aEnd = a + (qty & ~(size_t)15);
+  __m256 dot0 = _mm256_setzero_ps(), dot1 = _mm256_setzero_ps();
+  __m256 aa0 = _mm256_setzero_ps(), aa1 = _mm256_setzero_ps();
+  while (a < aEnd) {
+    __m256 a0 = _mm256_loadu_ps(a), a1 = _mm256_loadu_ps(a + 8);
+    dot0 = _mm256_fmadd_ps(a0, _mm256_loadu_ps(b), dot0);
+    dot1 = _mm256_fmadd_ps(a1, _mm256_loadu_ps(b + 8), dot1);
+    aa0 = _mm256_fmadd_ps(a0, a0, aa0);
+    aa1 = _mm256_fmadd_ps(a1, a1, aa1);
+    a += 16;
+    b += 16;
+  }
+  f32 dot = hsum_float_avx(_mm256_add_ps(dot0, dot1));
+  f32 aMag = hsum_float_avx(_mm256_add_ps(aa0, aa1));
+  for (size_t i = qty & ~(size_t)15; i < qty; i++, a++, b++) {
+    dot += *a * *b;
+    aMag += *a * *a;
+  }
+  return 1 - (dot / (sqrt(aMag) * sqrt(bMag)));
+}
 #endif
 
 #ifdef SQLITE_VEC_ENABLE_NEON
@@ -7815,6 +7843,21 @@ int vec0Filter_knn_chunks_iter(vec0_vtab *p, sqlite3_stmt *stmtChunks,
   assert(numValueEntries == argc);
   int hasMetadataFilters = 0;
   int hasDistanceConstraints = 0;
+#ifdef SQLITE_VEC_ENABLE_AVX
+  // The query's squared magnitude is the same for every row, so cosine
+  // computes it once per query rather than once per row.
+  int cosineAvxFma = 0;
+  f32 queryMagSq = 0;
+  if (vector_column->element_type == SQLITE_VEC_ELEMENT_TYPE_FLOAT32 &&
+      vector_column->distance_metric == VEC0_DISTANCE_METRIC_COSINE &&
+      vector_column->dimensions >= 16 && vec_avx_caps.avx2 &&
+      vec_avx_caps.fma) {
+    cosineAvxFma = 1;
+    for (size_t j = 0; j < vector_column->dimensions; j++) {
+      queryMagSq += ((f32 *)queryVector)[j] * ((f32 *)queryVector)[j];
+    }
+  }
+#endif
   for(int i = 0; i < argc; i++) {
     int idx = 1 + (i * 4);
     char kind = idxStr[idx + 0];
@@ -7973,6 +8016,14 @@ int vec0Filter_knn_chunks_iter(vec0_vtab *p, sqlite3_stmt *stmtChunks,
           break;
         }
         case VEC0_DISTANCE_METRIC_COSINE: {
+#ifdef SQLITE_VEC_ENABLE_AVX
+          if (cosineAvxFma) {
+            result = cosine_float_avx_fma_qn(base_i, (f32 *)queryVector,
+                                             vector_column->dimensions,
+                                             queryMagSq);
+            break;
+          }
+#endif
           result = distance_cosine_float(base_i, (f32 *)queryVector,
                                          &vector_column->dimensions);
           break;
@@ -8062,6 +8113,18 @@ int vec0Filter_knn_chunks_iter(vec0_vtab *p, sqlite3_stmt *stmtChunks,
           if(!keep) {
             bitmap_set(b, j, 0);
           }
+        }
+      }
+    }
+
+    // Once the global top k is full, a row that is not strictly nearer than
+    // the k-th (merge_sorted_lists keeps the earlier row on a tie, and ranks a
+    // NaN last) can never enter it, so it need not be a candidate.
+    if (k_used == k && !isnan(topk_distances[k - 1])) {
+      f32 worst = topk_distances[k - 1];
+      for (int j = 0; j < p->chunk_size; j++) {
+        if (bitmap_get(b, j) && !(chunk_distances[j] < worst)) {
+          bitmap_set(b, j, 0);
         }
       }
     }
