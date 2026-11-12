@@ -166,6 +166,16 @@ enum VectorElementType {
 #define PORTABLE_ALIGN32 __attribute__((aligned(32)))
 #define PORTABLE_ALIGN64 __attribute__((aligned(64)))
 
+// Runtime CPU capability flags, filled in sqlite3_vec_init from CPUID, which
+// is deterministic, so writing them on every connection open is harmless.
+// Dispatch sites read them with no per-call check. They stay 0 until init has
+// run, which selects the scalar path.
+static struct {
+  int avx;
+  int avx2;
+  int fma;
+} vec_avx_caps = {0, 0, 0};
+
 __attribute__((target("avx,avx2")))
 static f32 l2_sqr_float_avx(const void *pVect1v, const void *pVect2v,
                             const void *qty_ptr) {
@@ -549,9 +559,7 @@ static f32 distance_l2_sqr_float(const void *a, const void *b, const void *d) {
   }
 #endif
 #ifdef SQLITE_VEC_ENABLE_AVX
-  static int has_avx2 = -1;
-  if (has_avx2 < 0) has_avx2 = __builtin_cpu_supports("avx2");
-  if (has_avx2 && ((*(const size_t *)d) % 16 == 0)) {
+  if (vec_avx_caps.avx2 && ((*(const size_t *)d) % 16 == 0)) {
     return l2_sqr_float_avx(a, b, d);
   }
 #endif
@@ -623,9 +631,7 @@ static f32 distance_cosine_float(const void *pVect1v, const void *pVect2v,
   }
 #endif
 #ifdef SQLITE_VEC_ENABLE_AVX
-  static int has_avx2 = -1;
-  if (has_avx2 < 0) has_avx2 = __builtin_cpu_supports("avx2");
-  if (has_avx2 && (*(const size_t *)qty_ptr) >= 16) {
+  if (vec_avx_caps.avx2 && (*(const size_t *)qty_ptr) >= 16) {
     return cosine_float_avx(pVect1v, pVect2v, qty_ptr);
   }
 #endif
@@ -957,9 +963,7 @@ static f32 distance_hamming(const void *a, const void *b, const void *d) {
   }
 #endif
 #ifdef SQLITE_VEC_ENABLE_AVX
-  static int has_avx2 = -1;
-  if (has_avx2 < 0) has_avx2 = __builtin_cpu_supports("avx2");
-  if (has_avx2 && n_bytes >= 32) {
+  if (vec_avx_caps.avx2 && n_bytes >= 32) {
     return distance_hamming_avx2((const u8 *)a, (const u8 *)b, n_bytes);
   }
 #endif
@@ -11218,6 +11222,12 @@ SQLITE_VEC_API int sqlite3_vec_init(sqlite3 *db, char **pzErrMsg,
   SQLITE_EXTENSION_INIT2(pApi);
 #endif
   int rc = SQLITE_OK;
+
+#ifdef SQLITE_VEC_ENABLE_AVX
+  vec_avx_caps.avx = __builtin_cpu_supports("avx");
+  vec_avx_caps.avx2 = __builtin_cpu_supports("avx2");
+  vec_avx_caps.fma = __builtin_cpu_supports("fma");
+#endif
 
 #define DEFAULT_FLAGS (SQLITE_UTF8 | SQLITE_INNOCUOUS | SQLITE_DETERMINISTIC)
 
